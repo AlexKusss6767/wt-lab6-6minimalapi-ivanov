@@ -1,83 +1,103 @@
-using wt_lab6_6minimalapi_ivanov.Models;
-using wt_lab6_6minimalapi_ivanov.Data;
+using Microsoft.EntityFrameworkCore;
+using wt_lab7_7postgres_efcore_ivanov.Data;
+using wt_lab7_7postgres_efcore_ivanov.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. Подключаем OpenAPI (Swagger)
+// 1. Получаем строку подключения из appsettings.Development.json
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+
+// 2. Если мы на Render, переопределяем строку через DATABASE_URL
+var databaseUrl = Environment.GetEnvironmentVariable("DATABASE_URL");
+if (!string.IsNullOrWhiteSpace(databaseUrl))
+{
+    var uri = new Uri(databaseUrl);
+    var userInfo = uri.UserInfo.Split(':', 2);
+    
+    // Проверка порта (если Render не передал, ставим 5432)
+    var dbPort = uri.Port == -1 ? 5432 : uri.Port; 
+    
+    connectionString = $"Host={uri.Host};Port={dbPort};Database={uri.AbsolutePath.TrimStart('/')};Username={userInfo[0]};Password={userInfo[1]};SSL Mode=Require;Trust Server Certificate=true;";
+}
+
+// 3. Подключаем базу данных и OpenAPI
+builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
+// 4. Автоматически применяем миграции при запуске
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    db.Database.Migrate();
+}
+
+// 5. Включаем OpenAPI в режиме разработки
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
 }
 
-// 2. Базовые маршруты
-app.MapGet("/", () => "Minimal API работает!");
+// ==================== ЭНДПОИНТЫ ====================
 
-app.MapGet("/api/info", () => new
-{
-    Application = "Web Technologies",
-    Technology = "ASP.NET Core Minimal API",
-    Version = "1.0"
-});
+app.MapGet("/", () => "Minimal API + EF Core работает!");
+app.MapGet("/api/info", () => new { Application = "Web Technologies", Technology = "ASP.NET Core + EF Core + PostgreSQL" });
 
-// 3. GET: Получить все (с фильтрацией)
-app.MapGet("/api/products", (string? search) =>
+// GET: Все товары
+app.MapGet("/api/products", async (AppDbContext db) => 
+    Results.Ok(await db.Products.ToListAsync()));
+
+// GET: Поиск
+app.MapGet("/api/products/search", async (string? search, AppDbContext db) =>
 {
-    var products = ProductStore.Products.AsEnumerable();
+    var query = db.Products.AsQueryable();
     if (!string.IsNullOrWhiteSpace(search))
-    {
-        products = products.Where(x => x.Name.Contains(search, StringComparison.OrdinalIgnoreCase));
-    }
-    return Results.Ok(products);
+        query = query.Where(x => x.Name.ToLower().Contains(search.ToLower()));
+    return Results.Ok(await query.ToListAsync());
 });
 
-// 4. GET: Получить по ID
-app.MapGet("/api/products/{id}", (int id) =>
+// GET: По ID
+app.MapGet("/api/products/{id}", async (int id, AppDbContext db) =>
 {
-    var product = ProductStore.Products.FirstOrDefault(x => x.Id == id);
-    if (product == null) return Results.NotFound(new { error = "Товар не найден" });
-    return Results.Ok(product);
+    var product = await db.Products.FirstOrDefaultAsync(x => x.Id == id);
+    return product == null ? Results.NotFound() : Results.Ok(product);
 });
 
-// 5. POST: Создать товар
-app.MapPost("/api/products", (Product product) =>
+// POST: Создать
+app.MapPost("/api/products", async (Product product, AppDbContext db) =>
 {
-    if (string.IsNullOrWhiteSpace(product.Name) || product.Price <= 0)
-        return Results.BadRequest(new { error = "Некорректные данные" });
-
-    product.Id = ProductStore.Products.Count == 0 ? 1 : ProductStore.Products.Max(x => x.Id) + 1;
-    ProductStore.Products.Add(product);
-    
+    db.Products.Add(product);
+    await db.SaveChangesAsync();
     return Results.Created($"/api/products/{product.Id}", product);
 });
 
-// 6. PUT: Изменить товар
-app.MapPut("/api/products/{id}", (int id, Product updatedProduct) =>
+// PUT: Изменить
+app.MapPut("/api/products/{id}", async (int id, Product updated, AppDbContext db) =>
 {
-    var product = ProductStore.Products.FirstOrDefault(x => x.Id == id);
+    var product = await db.Products.FirstOrDefaultAsync(x => x.Id == id);
     if (product == null) return Results.NotFound();
 
-    product.Name = updatedProduct.Name;
-    product.Category = updatedProduct.Category;
-    product.Price = updatedProduct.Price;
-    product.IsAvailable = updatedProduct.IsAvailable;
-
+    product.Name = updated.Name;
+    product.Category = updated.Category;
+    product.Price = updated.Price;
+    product.IsAvailable = updated.IsAvailable;
+    
+    await db.SaveChangesAsync();
     return Results.Ok(product);
 });
 
-// 7. DELETE: Удалить товар
-app.MapDelete("/api/products/{id}", (int id) =>
+// DELETE: Удалить
+app.MapDelete("/api/products/{id}", async (int id, AppDbContext db) =>
 {
-    var product = ProductStore.Products.FirstOrDefault(x => x.Id == id);
+    var product = await db.Products.FirstOrDefaultAsync(x => x.Id == id);
     if (product == null) return Results.NotFound();
 
-    ProductStore.Products.Remove(product);
-    return Results.NoContent(); // 204
+    db.Products.Remove(product);
+    await db.SaveChangesAsync();
+    return Results.NoContent();
 });
 
-// Настройка порта для Render
+// ==================== ЗАПУСК ====================
 var port = Environment.GetEnvironmentVariable("PORT") ?? "10000";
 app.Run($"http://0.0.0.0:{port}");

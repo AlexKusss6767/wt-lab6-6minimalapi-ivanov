@@ -1,4 +1,4 @@
-namespace wt_lab6_6minimalapi_ivanov.Models;
+namespace wt_lab7_7postgres_efcore_ivanov.Models;
 
 public class Product
 {
@@ -7,4 +7,5 @@ public class Product
     public string Category { get; set; } = string.Empty;
     public decimal Price { get; set; }
     public bool IsAvailable { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow; // НОВОЕ СВОЙСТВО
 }
